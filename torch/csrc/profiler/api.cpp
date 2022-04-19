@@ -1,7 +1,5 @@
 #include <torch/csrc/profiler/api.h>
 
-#include <torch/csrc/profiler/util.h>
-
 namespace torch {
 namespace profiler {
 namespace impl {
@@ -9,7 +7,9 @@ namespace impl {
 ProfilerStubs::~ProfilerStubs() = default;
 
 namespace {
-struct DefaultCUDAStubs : public ProfilerStubs {
+struct DefaultStubs : public ProfilerStubs {
+  DefaultStubs(const char* name) : name_{name} {}
+
   void record(
       int* /*device*/,
       ProfilerEventStub* /*event*/,
@@ -19,6 +19,10 @@ struct DefaultCUDAStubs : public ProfilerStubs {
   float elapsed(
       const ProfilerEventStub* /*event*/,
       const ProfilerEventStub* /*event2*/) const override {
+    fail();
+    return 0.f;
+  }
+  virtual float elapsed(const ProfilerEventStub* /*event*/) const override {
     fail();
     return 0.f;
   }
@@ -40,89 +44,44 @@ struct DefaultCUDAStubs : public ProfilerStubs {
   void synchronize() const override {
     fail();
   }
-  ~DefaultCUDAStubs() override = default;
+  ~DefaultStubs() override = default;
 
  private:
   void fail() const {
-    AT_ERROR("CUDA used in profiler but not enabled.");
+    AT_ERROR(name_, " used in profiler but not enabled.");
   }
+
+  const char* const name_;
 };
-
-const DefaultCUDAStubs default_cuda_stubs;
-constexpr const DefaultCUDAStubs* default_cuda_stubs_addr = &default_cuda_stubs;
-// Constant initialization, so it is guaranteed to be initialized before
-// static initialization calls which may invoke registerCUDAMethods
-inline const ProfilerStubs*& cuda_stubs() {
-  static const ProfilerStubs* stubs_ =
-      static_cast<const ProfilerStubs*>(default_cuda_stubs_addr);
-  return stubs_;
-}
-
-struct DefaultITTStubs : public ProfilerStubs {
-  void record(
-      int* /*device*/,
-      ProfilerEventStub* /*event*/,
-      int64_t* /*cpu_ns*/) const override {
-    fail();
-  }
-  float elapsed(
-      const ProfilerEventStub* /*event*/,
-      const ProfilerEventStub* /*event2*/) const override {
-    fail();
-    return 0.f;
-  }
-  void mark(const char* /*name*/) const override {
-    fail();
-  }
-  void rangePush(const char* /*name*/) const override {
-    fail();
-  }
-  void rangePop() const override {
-    fail();
-  }
-  bool enabled() const override {
-    return false;
-  }
-  void onEachDevice(std::function<void(int)> /*op*/) const override {
-    fail();
-  }
-  void synchronize() const override {
-    fail();
-  }
-  ~DefaultITTStubs() override = default;
-
- private:
-  void fail() const {
-    AT_ERROR("ITT used in profiler but not enabled.");
-  }
-};
-
-const DefaultITTStubs default_itt_stubs;
-constexpr const DefaultITTStubs* default_itt_stubs_addr = &default_itt_stubs;
-// Constant initialization, so it is guaranteed to be initialized before
-// static initialization calls which may invoke registerITTMethods
-inline const ProfilerStubs*& itt_stubs() {
-  static const ProfilerStubs* stubs_ =
-      static_cast<const ProfilerStubs*>(default_itt_stubs_addr);
-  return stubs_;
-}
 } // namespace
 
-const ProfilerStubs* cudaStubs() {
-  return cuda_stubs();
-}
+#define REGISTER_DEFAULT(name, upper_name)                                   \
+  namespace {                                                                \
+  const DefaultStubs default_##name##_stubs{#upper_name};                    \
+  constexpr const DefaultStubs* default_##name##_stubs_addr =                \
+      &default_##name##_stubs;                                               \
+                                                                             \
+  /* Constant initialization, so it is guaranteed to be initialized before*/ \
+  /* static initialization calls which may invoke register<name>Methods*/    \
+  inline const ProfilerStubs*& name##_stubs() {                              \
+    static const ProfilerStubs* stubs_ =                                     \
+        static_cast<const ProfilerStubs*>(default_##name##_stubs_addr);      \
+    return stubs_;                                                           \
+  }                                                                          \
+  } /*namespace*/                                                            \
+                                                                             \
+  const ProfilerStubs* name##Stubs() {                                       \
+    return name##_stubs();                                                   \
+  }                                                                          \
+                                                                             \
+  void register##upper_name##Methods(ProfilerStubs* stubs) {                 \
+    name##_stubs() = stubs;                                                  \
+  }
 
-void registerCUDAMethods(ProfilerStubs* stubs) {
-  cuda_stubs() = stubs;
-}
-
-const ProfilerStubs* ittStubs() {
-  return itt_stubs();
-}
-
-void registerITTMethods(ProfilerStubs* stubs) {
-  itt_stubs() = stubs;
-}
+REGISTER_DEFAULT(cuda, CUDA)
+REGISTER_DEFAULT(itt, ITT)
+REGISTER_DEFAULT(xpu, XPU)
+#undef REGISTER_DEFAULT
 
 } // namespace impl
 } // namespace profiler

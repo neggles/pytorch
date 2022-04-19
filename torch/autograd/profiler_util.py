@@ -15,13 +15,17 @@ class EventList(list):
     """A list of Events (for pretty printing)"""
     def __init__(self, *args, **kwargs):
         use_cuda = kwargs.pop('use_cuda', True)
+        use_xpu = kwargs.pop('use_xpu', False)
         profile_memory = kwargs.pop('profile_memory', False)
         with_flops = kwargs.pop('with_flops', False)
+        with_calling_stack = kwargs.pop('with_calling_stack', False)
         super(EventList, self).__init__(*args, **kwargs)
         self._use_cuda = use_cuda
+        self._use_xpu = use_xpu
         self._profile_memory = profile_memory
         self._tree_built = False
         self._with_flops = with_flops
+        self._with_calling_stack = with_calling_stack
 
     def _build_tree(self):
         self._populate_cpu_children()
@@ -153,6 +157,7 @@ class EventList(list):
             max_src_column_width=75,
             max_name_column_width=55,
             max_shapes_column_width=80,
+            max_depth=10,
             header=None,
             top_level_events_only=False
     ):
@@ -180,9 +185,11 @@ class EventList(list):
             max_src_column_width=max_src_column_width,
             max_name_column_width=max_name_column_width,
             max_shapes_column_width=max_shapes_column_width,
+            max_depth=10,
             header=header,
             profile_memory=self._profile_memory,
             with_flops=self._with_flops,
+            with_calling_stack=self._with_calling_stack,
             top_level_events_only=top_level_events_only)
 
     def export_chrome_trace(self, path):
@@ -220,20 +227,36 @@ class EventList(list):
                         else f'" node_id:{evt.node_id}, thread_id:{evt.thread} "',
                     )
                 )
-                for k in evt.kernels:
-                    # 's' and 'f' draw Flow arrows from
-                    # the CPU launch to the GPU kernel
-                    f.write('{"name": "%s", '
-                            '"ph": "s", '
-                            '"ts": %s, '
-                            '"tid": %s, '
-                            '"pid": "CPU functions", '
-                            '"id": %s, '
-                            '"cat": "cpu_to_cuda", '
-                            '"args": {}}, ' % (evt.trace_name, evt.time_range.start,
-                                               evt.thread, next_id))
-                    # Note: use torch.profiler to get device kernel trace
-                    next_id += 1
+                if self._use_cuda is True:
+                    for k in evt.kernels:
+                        # 's' and 'f' draw Flow arrows from
+                        # the CPU launch to the GPU kernel
+                        f.write('{"name": "%s", '
+                                '"ph": "s", '
+                                '"ts": %s, '
+                                '"tid": %s, '
+                                '"pid": "CPU functions", '
+                                '"id": %s, '
+                                '"cat": "cpu_to_cuda", '
+                                '"args": {}}, ' % (evt.trace_name, evt.time_range.start,
+                                                   evt.thread, next_id))
+                        # Note: use torch.profiler to get device kernel trace
+                        next_id += 1
+                if self._use_xpu is True:
+                    for k in evt.kernels:
+                        # 's' and 'f' draw Flow arrows from
+                        # the CPU launch to the GPU kernel
+                        f.write('{"name": "%s", '
+                                '"ph": "s", '
+                                '"ts": %s, '
+                                '"tid": %s, '
+                                '"pid": "CPU functions", '
+                                '"id": %s, '
+                                '"cat": "cpu_to_xpu", '
+                                '"args": {}}, ' % (evt.trace_name, evt.time_range.start,
+                                                   evt.thread, next_id))
+                        # Note: use torch.profiler to get device kernel trace
+                        next_id += 1
             if len(self) > 0:
                 # remove trailing whitespace and comma
                 f.seek(f.tell() - 2, os.SEEK_SET)
@@ -290,8 +313,10 @@ class EventList(list):
         avg_list = EventList(
             stats.values(),
             use_cuda=self._use_cuda,
+            use_xpu=self._use_xpu,
             profile_memory=self._profile_memory,
-            with_flops=self._with_flops)
+            with_flops=self._with_flops,
+            with_calling_stack=self._with_calling_stack)
         for evt in avg_list:
             evt.stack = evt.stack[:group_by_stack_n]
             if not group_by_input_shapes:
@@ -354,10 +379,13 @@ class FormattedTimesMixin(object):
     """
     cpu_time_str = _attr_formatter('cpu_time')
     cuda_time_str = _attr_formatter('cuda_time')
+    xpu_time_str = _attr_formatter('xpu_time')
     cpu_time_total_str = _attr_formatter('cpu_time_total')
     cuda_time_total_str = _attr_formatter('cuda_time_total')
+    xpu_time_total_str = _attr_formatter('xpu_time_total')
     self_cpu_time_total_str = _attr_formatter('self_cpu_time_total')
     self_cuda_time_total_str = _attr_formatter('self_cuda_time_total')
+    self_xpu_time_total_str = _attr_formatter('self_xpu_time_total')
 
     @property
     def cpu_time(self):
@@ -366,6 +394,10 @@ class FormattedTimesMixin(object):
     @property
     def cuda_time(self):
         return 0.0 if self.count == 0 else 1.0 * self.cuda_time_total / self.count  # type: ignore[attr-defined]
+
+    @property
+    def xpu_time(self):
+        return 0.0 if self.count == 0 else 1.0 * self.xpu_time_total / self.count  # type: ignore[attr-defined]
 
 
 class Interval(object):
@@ -384,7 +416,7 @@ class FunctionEvent(FormattedTimesMixin):
     """Profiling information about a single function."""
     def __init__(
             self, id, name, thread, start_us, end_us, fwd_thread=None, input_shapes=None,
-            stack=None, scope=0, cpu_memory_usage=0, cuda_memory_usage=0, is_async=False,
+            stack=None, cstack=None, scope=0, cpu_memory_usage=0, cuda_memory_usage=0, xpu_memory_usage=0, is_async=False,
             is_remote=False, sequence_nr=-1, node_id=-1, device_type=DeviceType.CPU, device_index=0,
             is_legacy=False, flops=None, trace_name=None):
         self.id: int = id
@@ -400,9 +432,11 @@ class FunctionEvent(FormattedTimesMixin):
         self.cpu_parent: Optional[FunctionEvent] = None
         self.input_shapes: Tuple[int, ...] = input_shapes
         self.stack: List = stack
+        self.cstack: Tuple[int, ...] = cstack
         self.scope: int = scope
         self.cpu_memory_usage: int = cpu_memory_usage
         self.cuda_memory_usage: int = cuda_memory_usage
+        self.xpu_memory_usage: int = xpu_memory_usage
         self.is_async: bool = is_async
         self.is_remote: bool = is_remote
         self.sequence_nr: int = sequence_nr
@@ -411,7 +445,7 @@ class FunctionEvent(FormattedTimesMixin):
         self.is_legacy: bool = is_legacy
         self.flops: Optional[int] = flops
 
-    def append_kernel(self, name, device, duration):
+    def append_kernel(self, name, device : torch.device, duration):
         assert self.device_type == DeviceType.CPU
         self.kernels.append(Kernel(name, device, duration))
 
@@ -457,6 +491,12 @@ class FunctionEvent(FormattedTimesMixin):
         )
 
     @property
+    def self_xpu_memory_usage(self):
+        if self.is_async:
+            return 0
+        return self.xpu_memory_usage - sum([child.xpu_memory_usage for child in self.cpu_children])
+
+    @property
     def self_cpu_time_total(self):
         if self.is_async or self.device_type != DeviceType.CPU:
             return 0
@@ -471,14 +511,15 @@ class FunctionEvent(FormattedTimesMixin):
         if self.device_type == DeviceType.CPU:
             if not self.is_legacy:
                 # account for the kernels in the children ops
-                return (sum(kinfo.duration for kinfo in self.kernels) +
+                return (sum(kinfo.duration for kinfo in self.kernels if kinfo.device.type == DeviceType.CUDA) +
                         sum(ch.cuda_time_total for ch in self.cpu_children))
             else:
                 # each legacy cpu events has a single (fake) kernel
-                return sum(kinfo.duration for kinfo in self.kernels)
-        else:
-            assert self.device_type == DeviceType.CUDA
+                return sum(kinfo.duration for kinfo in self.kernels if kinfo.device.type == DeviceType.CUDA)
+        elif self.device_type == DeviceType.CUDA:
             return self.time_range.elapsed_us()
+        else:
+            return 0
 
     @property
     def self_cuda_time_total(self):
@@ -487,9 +528,10 @@ class FunctionEvent(FormattedTimesMixin):
         if self.device_type == DeviceType.CPU:
             return self.cuda_time_total - \
                 sum([child.cuda_time_total for child in self.cpu_children])
-        else:
-            assert(self.device_type == DeviceType.CUDA)
+        elif self.device_type == DeviceType.CUDA:
             return self.cuda_time_total
+        else:
+            return 0
 
     @property
     def cpu_time_total(self):
@@ -499,14 +541,35 @@ class FunctionEvent(FormattedTimesMixin):
             return 0
 
     @property
+    def xpu_time_total(self):
+        if self.is_async:
+            return 0
+        if self.device_type == DeviceType.CPU:
+            # account for the kernels in the children ops
+            return (sum(kinfo.duration for kinfo in self.kernels if kinfo.device.type == "xpu") +
+                    sum(ch.xpu_time_total for ch in self.cpu_children))
+        elif self.device_type == DeviceType.XPU:
+            print("self.device_type = ", 'xpu')
+            return self.time_range.elapsed_us()
+        else:
+            return 0
+
+    @property
+    def self_xpu_time_total(self):
+        if self.is_async:
+            return 0
+        else:
+            return sum(kinfo.duration for kinfo in self.kernels if kinfo.device.type == "xpu")
+
+    @property
     def key(self):
         return self.name
 
     def __repr__(self):
         return (
             '<FunctionEvent id={} name={} device_type={} node_id={} cpu_time={} start_us={} end_us={} '
-            'cpu_children={} cuda_time={} name={} thread={} input_shapes={} '
-            'cpu_memory_usage={} cuda_memory_usage={} is_async={} is_remote={} seq_nr={} is_legacy={}>'.format(
+            'cpu_children={} cuda_time={} xpu_time={} name={} thread={} input_shapes={} cstack={}'
+            'cpu_memory_usage={} cuda_memory_usage={} xpu_memory_usage={} is_async={} is_remote={} seq_nr={} is_legacy={}>'.format(
                 self.id,
                 self.name,
                 self.device_type,
@@ -516,11 +579,14 @@ class FunctionEvent(FormattedTimesMixin):
                 self.time_range.end,
                 str([child.id for child in self.cpu_children]),
                 self.cuda_time_str,
+                self.xpu_time_str,
                 self.name,
                 self.thread,
                 str(self.input_shapes),
+                str(self.cstack),
                 self.cpu_memory_usage,
                 self.cuda_memory_usage,
+                self.xpu_memory_usage,
                 self.is_async,
                 self.is_remote,
                 self.sequence_nr,
@@ -539,15 +605,20 @@ class FunctionEventAvg(FormattedTimesMixin):
         self.is_remote: bool = False
         self.cpu_time_total: int = 0
         self.cuda_time_total: int = 0
+        self.xpu_time_total: int = 0
         self.self_cpu_time_total: int = 0
         self.self_cuda_time_total: int = 0
+        self.self_xpu_time_total: int = 0
         self.input_shapes: Optional[List[List[int]]] = None
         self.stack: Optional[List] = None
+        self.cstack: Optional[List] = None
         self.scope: Optional[int] = None
         self.cpu_memory_usage: int = 0
         self.cuda_memory_usage: int = 0
+        self.xpu_memory_usage: int = 0
         self.self_cpu_memory_usage: int = 0
         self.self_cuda_memory_usage: int = 0
+        self.self_xpu_memory_usage: int = 0
         self.cpu_children: Optional[List[FunctionEvent]] = None
         self.cpu_parent: Optional[FunctionEvent] = None
         self.device_type: DeviceType = DeviceType.CPU
@@ -567,6 +638,7 @@ class FunctionEventAvg(FormattedTimesMixin):
 
             self.input_shapes = other.input_shapes
             self.stack = other.stack
+            self.cstack = other.cstack
             self.scope = other.scope
             self.device_type = other.device_type
             self.is_legacy = other.is_legacy
@@ -575,12 +647,16 @@ class FunctionEventAvg(FormattedTimesMixin):
         assert other.key == self.key
         self.cpu_time_total += other.cpu_time_total
         self.cuda_time_total += other.cuda_time_total
+        self.xpu_time_total += other.xpu_time_total
         self.self_cpu_time_total += other.self_cpu_time_total
         self.self_cuda_time_total += other.self_cuda_time_total
+        self.self_xpu_time_total += other.self_xpu_time_total
         self.cpu_memory_usage += other.cpu_memory_usage
         self.cuda_memory_usage += other.cuda_memory_usage
+        self.xpu_memory_usage += other.xpu_memory_usage
         self.self_cpu_memory_usage += other.self_cpu_memory_usage
         self.self_cuda_memory_usage += other.self_cuda_memory_usage
+        self.self_xpu_memory_usage += other.self_xpu_memory_usage
         self.count += other.count
         if self.flops is None:
             self.flops = other.flops
@@ -594,16 +670,20 @@ class FunctionEventAvg(FormattedTimesMixin):
     def __repr__(self):
         return (
             '<FunctionEventAvg key={} self_cpu_time={} cpu_time={} '
-            ' self_cuda_time={} cuda_time={} input_shapes={} '
-            'cpu_memory_usage={} cuda_memory_usage={}>'.format(
+            ' self_cuda_time={} cuda_time={} self_xpu_time={} xpu_time={} input_shapes={} cstack={}'
+            'cpu_memory_usage={} cuda_memory_usage={} xpu_memory_usage={}>'.format(
                 self.key,
                 self.self_cpu_time_total_str,
                 self.cpu_time_str,
                 self.self_cuda_time_total_str,
                 self.cuda_time_str,
+                self.self_xpu_time_total_str,
+                self.xpu_time_str,
                 str(self.input_shapes),
+                str(self.cstack),
                 self.cpu_memory_usage,
                 self.cuda_memory_usage,
+                self.xpu_memory_usage,
             )
         )
 
@@ -683,7 +763,9 @@ def _build_table(
         max_src_column_width=75,
         max_name_column_width=55,
         max_shapes_column_width=80,
+        max_depth=10,
         with_flops=False,
+        with_calling_stack=False,
         profile_memory=False,
         top_level_events_only=False):
     """Prints a summary of events (which can be a list of FunctionEvent or FunctionEventAvg)."""
@@ -692,13 +774,15 @@ def _build_table(
 
     has_cuda_time = any([event.self_cuda_time_total > 0 for event in events])
     has_cuda_mem = any([event.self_cuda_memory_usage > 0 for event in events])
+    has_xpu_time = any([event.self_xpu_time_total > 0 for event in events])
+    has_xpu_mem = any([event.self_xpu_memory_usage > 0 for event in events])
     has_input_shapes = any(
         [(event.input_shapes is not None and len(event.input_shapes) > 0) for event in events])
 
     if sort_by is not None:
         events = EventList(sorted(
             events, key=lambda evt: getattr(evt, sort_by), reverse=True
-        ), use_cuda=has_cuda_time, profile_memory=profile_memory, with_flops=with_flops)
+        ), use_cuda=has_cuda_time, use_xpu=has_xpu_time, profile_memory=profile_memory, with_flops=with_flops, with_calling_stack=with_calling_stack)
 
     name_column_width = max([len(evt.key) for evt in events]) + 4
     if max_name_column_width is not None:
@@ -710,6 +794,10 @@ def _build_table(
 
     DEFAULT_COLUMN_WIDTH = 12
     flops_column_width = DEFAULT_COLUMN_WIDTH
+
+    if with_calling_stack:
+        cstack_column_width = max([len(str(evt.cstack[:max_depth])[1:-1]) for evt in events]) + 8
+        cstack_column_width = max(cstack_column_width, 20)
 
     src_column_width = None
     stacks = []
@@ -737,6 +825,13 @@ def _build_table(
             'CUDA total',
             'CUDA time avg',
         ])
+    if has_xpu_time:
+        headers.extend([
+            'Self XPU',
+            'Self XPU %',
+            'XPU total',
+            'XPU time avg',
+        ])
     if profile_memory:
         headers.extend([
             'CPU Mem',
@@ -746,6 +841,11 @@ def _build_table(
             headers.extend([
                 'CUDA Mem',
                 'Self CUDA Mem',
+            ])
+        if has_xpu_mem:
+            headers.extend([
+                'XPU Mem',
+                'Self XPU Mem',
             ])
     headers.append(
         '# of Calls'
@@ -806,6 +906,10 @@ def _build_table(
         else:
             with_flops = False  # can't find any valid flops
 
+    if with_calling_stack:
+        headers.append('Calling Stack Tree'.ljust(cstack_column_width))
+        add_column(cstack_column_width)
+
     row_format = row_format_lst[0]
     header_sep = header_sep_lst[0]
     line_length = line_length_lst[0]
@@ -820,14 +924,19 @@ def _build_table(
 
     sum_self_cpu_time_total = sum([event.self_cpu_time_total for event in events])
     sum_self_cuda_time_total = 0
+    sum_self_xpu_time_total = 0
     for evt in events:
         if evt.device_type == DeviceType.CPU:
             # in legacy profiler, kernel info is stored in cpu events
             if evt.is_legacy:
                 sum_self_cuda_time_total += evt.self_cuda_time_total
+                sum_self_xpu_time_total += evt.self_xpu_time_total
         elif evt.device_type == DeviceType.CUDA:
             # in kineto profiler, there're events with the correct device type (e.g. CUDA)
             sum_self_cuda_time_total += evt.self_cuda_time_total
+        elif evt.device_type == DeviceType.XPU:
+            # The XPU doesn't support kineto yet
+            pass
 
     # Actual printing
     if header is not None:
@@ -878,6 +987,14 @@ def _build_table(
                 evt.cuda_time_total_str,
                 evt.cuda_time_str,  # Cuda time avg
             ])
+        if has_xpu_time:
+            row_values.extend([
+                evt.self_xpu_time_total_str,
+                # SYCL time total %
+                _format_time_share(evt.self_xpu_time_total, sum_self_xpu_time_total),
+                evt.xpu_time_total_str,
+                evt.xpu_time_str,   # SYCL time avg
+            ])
         if profile_memory:
             row_values.extend([
                 # CPU Mem Total
@@ -891,6 +1008,13 @@ def _build_table(
                     _format_memory(evt.cuda_memory_usage),
                     # Self CUDA Mem Total
                     _format_memory(evt.self_cuda_memory_usage),
+                ])
+            if has_xpu_mem:
+                row_values.extend([
+                    # SYCL Mem Total
+                    _format_memory(evt.xpu_memory_usage),
+                    # Self SYCL Mem Total
+                    _format_memory(evt.self_xpu_memory_usage),
                 ])
         row_values.append(
             evt.count,  # Number of calls
@@ -910,6 +1034,12 @@ def _build_table(
             if len(evt.stack) > 0:
                 src_field = trim_path(evt.stack[0], src_column_width)
             row_values.append(src_field)
+        if with_calling_stack:
+            if len(evt.cstack) > max_depth:
+                cstack_str = str(evt.cstack[:max_depth])[1:-1] + ",..."
+            else:
+                cstack_str = str(evt.cstack)[1:-1]
+            row_values.append(cstack_str.ljust(cstack_column_width))
         append(row_format.format(*row_values))
 
         if has_stack:
@@ -919,8 +1049,11 @@ def _build_table(
             empty_headers.append("")
             append(row_format.format(*empty_headers))
 
+
     append(header_sep)
     append("Self CPU time total: {}".format(_format_time(sum_self_cpu_time_total)))
     if has_cuda_time:
         append("Self CUDA time total: {}".format(_format_time(sum_self_cuda_time_total)))
+    if has_xpu_time:
+        append("Self XPU time total: {}".format(_format_time(sum_self_xpu_time_total)))
     return ''.join(result)
