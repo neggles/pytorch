@@ -3,6 +3,16 @@
 #include <c10/macros/Macros.h>
 #include <limits>
 
+#if defined(CL_SYCL_LANGUAGE_VERSION)
+#include <CL/sycl.hpp> // for SYCL 1.2.1
+#elif defined(SYCL_LANGUAGE_VERSION)
+#include <sycl/sycl.hpp> // for SYCL 2020
+#endif
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+#include <ext/oneapi/bfloat16.hpp>
+#endif
+
 C10_CLANG_DIAGNOSTIC_PUSH()
 #if C10_CLANG_HAS_WARNING("-Wimplicit-int-float-conversion")
 C10_CLANG_DIAGNOSTIC_IGNORE("-Wimplicit-int-float-conversion")
@@ -15,6 +25,8 @@ inline C10_HOST_DEVICE BFloat16::BFloat16(float value) {
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11000 && \
     defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   x = __bfloat16_as_ushort(__float2bfloat16(value));
+#elif defined(__SYCL_DEVICE_ONLY__) && defined(__INTEL_LLVM_COMPILER)
+  x = sycl::bit_cast<uint16_t>(sycl::ext::oneapi::bfloat16(value));
 #else
   // RNE by default
   x = detail::round_to_nearest_even(value);
@@ -25,6 +37,8 @@ inline C10_HOST_DEVICE BFloat16::BFloat16(float value) {
 inline C10_HOST_DEVICE BFloat16::operator float() const {
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11000
   return __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(&x));
+#elif defined(__SYCL_DEVICE_ONLY__) && defined(__INTEL_LLVM_COMPILER)
+  return float(*reinterpret_cast<const sycl::ext::oneapi::bfloat16*>(&x));
 #else
   return detail::f32_from_bits(x);
 #endif
@@ -36,6 +50,15 @@ inline C10_HOST_DEVICE BFloat16::BFloat16(const __nv_bfloat16& value) {
 }
 inline C10_HOST_DEVICE BFloat16::operator __nv_bfloat16() const {
   return *reinterpret_cast<const __nv_bfloat16*>(&x);
+}
+#endif
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+inline C10_HOST_DEVICE BFloat16::BFloat16(const sycl::ext::oneapi::bfloat16& value) {
+  x = *reinterpret_cast<const unsigned short*>(&value);
+}
+inline C10_HOST_DEVICE BFloat16::operator sycl::ext::oneapi::bfloat16() const {
+  return *reinterpret_cast<const sycl::ext::oneapi::bfloat16*>(&x);
 }
 #endif
 

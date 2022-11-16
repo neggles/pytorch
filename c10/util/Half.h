@@ -45,10 +45,10 @@
 #include <hip/hip_fp16.h>
 #endif
 
-#if defined(SYCL_LANGUAGE_VERSION)
-#include <sycl/sycl.hpp> // for SYCL 2020
-#elif defined(CL_SYCL_LANGUAGE_VERSION)
+#if defined(CL_SYCL_LANGUAGE_VERSION)
 #include <CL/sycl.hpp> // for SYCL 1.2.1
+#elif defined(SYCL_LANGUAGE_VERSION)
+#include <sycl/sycl.hpp> // for SYCL 2020
 #endif
 
 // Standard check for compiling CUDA with clang
@@ -395,8 +395,7 @@ struct alignas(2) Half {
 #if defined(__CUDACC__) || defined(__HIPCC__)
   inline C10_HOST_DEVICE Half(const __half& value);
   inline C10_HOST_DEVICE operator __half() const;
-#endif
-#ifdef SYCL_LANGUAGE_VERSION
+#elif defined(SYCL_LANGUAGE_VERSION)
   inline C10_HOST_DEVICE Half(const sycl::half& value);
   inline C10_HOST_DEVICE operator sycl::half() const;
 #endif

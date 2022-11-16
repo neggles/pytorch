@@ -12,10 +12,10 @@
 #include <hip/hip_fp16.h>
 #endif
 
-#if defined(SYCL_LANGUAGE_VERSION)
-#include <sycl/sycl.hpp> // for SYCL 2020
-#elif defined(CL_SYCL_LANGUAGE_VERSION)
+#if defined(CL_SYCL_LANGUAGE_VERSION)
 #include <CL/sycl.hpp> // for SYCL 1.2.1
+#elif defined(SYCL_LANGUAGE_VERSION)
+#include <sycl/sycl.hpp> // for SYCL 2020
 #endif
 
 C10_CLANG_DIAGNOSTIC_PUSH()
@@ -58,7 +58,7 @@ inline C10_HOST_DEVICE Half::operator __half() const {
 }
 #endif
 
-#ifdef SYCL_LANGUAGE_VERSION
+#if defined(SYCL_LANGUAGE_VERSION)
 inline C10_HOST_DEVICE Half::Half(const sycl::half& value) {
   x = *reinterpret_cast<const unsigned short*>(&value);
 }

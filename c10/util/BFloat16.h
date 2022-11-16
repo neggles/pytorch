@@ -11,6 +11,16 @@
 #include <cuda_bf16.h>
 #endif
 
+#if defined(CL_SYCL_LANGUAGE_VERSION)
+#include <CL/sycl.hpp> // for SYCL 1.2.1
+#elif defined(SYCL_LANGUAGE_VERSION)
+#include <sycl/sycl.hpp> // for SYCL 2020
+#endif
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+#include <ext/oneapi/bfloat16.hpp>
+#endif
+
 namespace c10 {
 
 namespace detail {
@@ -94,6 +104,12 @@ struct alignas(2) BFloat16 {
   inline C10_HOST_DEVICE BFloat16(const __nv_bfloat16& value);
   explicit inline C10_HOST_DEVICE operator __nv_bfloat16() const;
 #endif
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+  inline C10_HOST_DEVICE BFloat16(const sycl::ext::oneapi::bfloat16& value);
+  explicit inline C10_HOST_DEVICE operator sycl::ext::oneapi::bfloat16() const;
+#endif
+
 };
 
 } // namespace c10
