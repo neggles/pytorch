@@ -10,7 +10,7 @@
 #endif
 
 #if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
-#include <ext/oneapi/bfloat16.hpp>
+#include <ext/oneapi/experimental/bfloat16.hpp>
 #endif
 
 C10_CLANG_DIAGNOSTIC_PUSH()
@@ -26,7 +26,7 @@ inline C10_HOST_DEVICE BFloat16::BFloat16(float value) {
     defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   x = __bfloat16_as_ushort(__float2bfloat16(value));
 #elif defined(__SYCL_DEVICE_ONLY__) && defined(__INTEL_LLVM_COMPILER)
-  x = sycl::bit_cast<uint16_t>(sycl::ext::oneapi::bfloat16(value));
+  x = sycl::bit_cast<uint16_t>(sycl::ext::oneapi::experimental::bfloat16(value));
 #else
   // RNE by default
   x = detail::round_to_nearest_even(value);
@@ -38,7 +38,7 @@ inline C10_HOST_DEVICE BFloat16::operator float() const {
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11000
   return __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(&x));
 #elif defined(__SYCL_DEVICE_ONLY__) && defined(__INTEL_LLVM_COMPILER)
-  return float(*reinterpret_cast<const sycl::ext::oneapi::bfloat16*>(&x));
+  return float(*reinterpret_cast<const sycl::ext::oneapi::experimental::bfloat16*>(&x));
 #else
   return detail::f32_from_bits(x);
 #endif
@@ -54,11 +54,11 @@ inline C10_HOST_DEVICE BFloat16::operator __nv_bfloat16() const {
 #endif
 
 #if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
-inline C10_HOST_DEVICE BFloat16::BFloat16(const sycl::ext::oneapi::bfloat16& value) {
+inline C10_HOST_DEVICE BFloat16::BFloat16(const sycl::ext::oneapi::experimental::bfloat16& value) {
   x = *reinterpret_cast<const unsigned short*>(&value);
 }
-inline C10_HOST_DEVICE BFloat16::operator sycl::ext::oneapi::bfloat16() const {
-  return *reinterpret_cast<const sycl::ext::oneapi::bfloat16*>(&x);
+inline C10_HOST_DEVICE BFloat16::operator sycl::ext::oneapi::experimental::bfloat16() const {
+  return *reinterpret_cast<const sycl::ext::oneapi::experimental::bfloat16*>(&x);
 }
 #endif
 

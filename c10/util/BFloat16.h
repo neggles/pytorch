@@ -18,7 +18,7 @@
 #endif
 
 #if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
-#include <ext/oneapi/bfloat16.hpp>
+#include <ext/oneapi/experimental/bfloat16.hpp>
 #endif
 
 namespace c10 {
@@ -106,8 +106,8 @@ struct alignas(2) BFloat16 {
 #endif
 
 #if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
-  inline C10_HOST_DEVICE BFloat16(const sycl::ext::oneapi::bfloat16& value);
-  explicit inline C10_HOST_DEVICE operator sycl::ext::oneapi::bfloat16() const;
+  inline C10_HOST_DEVICE BFloat16(const sycl::ext::oneapi::experimental::bfloat16& value);
+  explicit inline C10_HOST_DEVICE operator sycl::ext::oneapi::experimental::bfloat16() const;
 #endif
 
 };
